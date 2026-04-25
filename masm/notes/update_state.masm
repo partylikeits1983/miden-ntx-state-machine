@@ -1,0 +1,78 @@
+use.miden::active_note
+use.miden::note
+use.miden::output_note
+use.std::sys
+use.std::crypto::hashes::rpo
+use.external_contract::state_machine
+
+# Memory layout
+# Note inputs are exactly one word [tag, 0, 0, 0] written at addr 0 by get_inputs.
+const.INPUTS_ADDR=0
+
+# => []
+begin
+    # Drop note args if executor accidentally pushed any
+    dropw
+    # => []
+
+    # ---------------------------------------------------------------------
+    # 1) Tick the state machine (increment storage slot 0)
+    # ---------------------------------------------------------------------
+    call.state_machine::increment_state
+    # => []
+
+    # ---------------------------------------------------------------------
+    # 2) Load this note's inputs into memory at INPUTS_ADDR.
+    #    get_inputs writes the full inputs word at INPUTS_ADDR and pushes
+    #    [num_inputs, dest_ptr] which we drop.
+    # ---------------------------------------------------------------------
+    push.INPUTS_ADDR exec.active_note::get_inputs drop drop
+    # => []
+
+    # ---------------------------------------------------------------------
+    # 3) Compute INPUTS_COMMITMENT for the next note. The next note has
+    #    the same inputs ([tag,0,0,0]). hash_memory wants count to be a
+    #    multiple of 8, so we hash 8 felts at INPUTS_ADDR (addresses 0..7);
+    #    addresses 4..7 are zero, which matches the implicit padding of
+    #    a 1-word NoteInputs.
+    # ---------------------------------------------------------------------
+    push.8.INPUTS_ADDR
+    # => [ptr=0, count=8]
+    exec.rpo::hash_memory
+    # => [INPUTS_COMMITMENT]
+
+    # ---------------------------------------------------------------------
+    # 4) Reuse this note's script root (next note runs the same MASM)
+    # ---------------------------------------------------------------------
+    exec.active_note::get_script_root
+    # => [SCRIPT_HASH, INPUTS_COMMITMENT]
+
+    # ---------------------------------------------------------------------
+    # 5) Bump serial number by 1 so the next note has a distinct id
+    # ---------------------------------------------------------------------
+    exec.active_note::get_serial_number
+    push.1 add
+    # => [SERIAL_NUM+1, SCRIPT_HASH, INPUTS_COMMITMENT]
+
+    exec.note::build_recipient_hash
+    # => [RECIPIENT]
+
+    # ---------------------------------------------------------------------
+    # 6) Build (tag, aux=0, note_type=PUBLIC=1, exec_hint=ALWAYS=1)
+    #    push.1.1.0 leaves [aux=0, note_type=1, exec_hint=1, RECIPIENT]
+    #    mem_load.INPUTS_ADDR reads the first felt of the inputs word, which
+    #    is the tag we want the next note to carry.
+    # ---------------------------------------------------------------------
+    push.1.1.0
+    # => [aux=0, note_type=1, exec_hint=1, RECIPIENT]
+    mem_load.INPUTS_ADDR
+    # => [tag, aux, note_type, exec_hint, RECIPIENT]
+
+    debug.stack
+
+    call.output_note::create
+    # => [note_idx, pad(15)]
+
+    exec.sys::truncate_stack
+    # => []
+end

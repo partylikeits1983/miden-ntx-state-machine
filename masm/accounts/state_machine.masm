@@ -1,0 +1,42 @@
+use.miden::active_account
+use miden::native_account
+use.std::sys
+
+const.STATE_SLOT=0
+
+#! Inputs:  []
+#! Outputs: [count]
+export.get_state
+    push.STATE_SLOT
+    # => [index]
+
+    exec.active_account::get_item
+    # => [count]
+
+    movdn.4 dropw
+    # => [count]
+end
+
+#! Inputs:  []
+#! Outputs: []
+export.increment_state
+    push.STATE_SLOT
+    # => [index]
+
+    exec.active_account::get_item
+    # => [count]
+
+    add.1
+    # => [count+1]
+
+    debug.stack
+
+    push.STATE_SLOT
+    # => [index, count+1]
+
+    exec.native_account::set_item
+    # => [OLD_VALUE]
+
+    dropw
+    # => []
+end
