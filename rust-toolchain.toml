@@ -1,0 +1,4 @@
+[toolchain]
+# miden-client 0.14 requires rustc >= 1.93; pin to latest stable to match.
+channel = "1.95"
+components = ["rustfmt", "clippy"]

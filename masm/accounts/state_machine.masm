@@ -1,42 +1,130 @@
-use.miden::active_account
-use miden::native_account
-use.std::sys
+use miden::protocol::active_account
+use miden::protocol::native_account
+use miden::protocol::active_note
+use miden::protocol::output_note
+use miden::protocol::note
+use miden::standards::attachments::network_account_target
+use miden::standards::note_tag::DEFAULT_TAG
+use miden::standards::note::execution_hint::ALWAYS
 
-const.STATE_SLOT=0
+# Storage slot identity. In 0.14+ slots are named, not indexed: the slot id
+# is the first two felts of the hash of the slot's name. The Rust side
+# constructs the slot with the matching `StorageSlotName::new(...)`, so the
+# string here must stay in sync with `COUNTER_SLOT_NAME` in src/main.rs and
+# tests/mock_chain.rs.
+const COUNTER_SLOT = word("miden_ntx_state_machine::counter")
 
+# Public note type, encoded the same way `output_note::create` expects.
+const NOTE_TYPE_PUBLIC=1
+
+# Locals used by `tick` to stash the NetworkAccountTarget attachment between
+# building it and applying it after the note is created. Layout mirrors
+# `bridge_out.masm::create_burn_note`.
+const ATTACHMENT_LOC=0
+const ATTACHMENT_KIND_LOC=4
+const ATTACHMENT_SCHEME_LOC=5
+
+#! Returns the current state counter.
+#!
 #! Inputs:  []
 #! Outputs: [count]
-export.get_state
-    push.STATE_SLOT
-    # => [index]
-
+pub proc get_count
+    push.COUNTER_SLOT[0..2]
     exec.active_account::get_item
-    # => [count]
-
     movdn.4 dropw
-    # => [count]
 end
 
+#! Increments the state counter by one. Used by `tick` and also callable
+#! standalone for testing.
+#!
 #! Inputs:  []
 #! Outputs: []
-export.increment_state
-    push.STATE_SLOT
-    # => [index]
-
+pub proc increment_count
+    push.COUNTER_SLOT[0..2]
     exec.active_account::get_item
-    # => [count]
-
     add.1
-    # => [count+1]
-
     debug.stack
-
-    push.STATE_SLOT
-    # => [index, count+1]
-
+    push.COUNTER_SLOT[0..2]
     exec.native_account::set_item
-    # => [OLD_VALUE]
-
     dropw
+end
+
+#! Performs one full state-machine tick:
+#!   1. increments the counter
+#!   2. emits a fresh `update_state` network note with the same script and
+#!      (empty) storage shape as the active (just-consumed) note, with
+#!      `serial_num + 1`, tagged at this account via a NetworkAccountTarget
+#!      attachment
+#!
+#! Step 2 is what keeps the chain self-perpetuating: the network transaction
+#! builder finds the emitted note via the attachment (NOT the tag - the tag
+#! is `DEFAULT_TAG` = 0 for attachment-targeted notes) and consumes it in
+#! the next block.
+#!
+#! Mirrors the recipe in `miden-base/.../bridge/bridge_out.masm::create_burn_note`:
+#!   build attachment -> save to locals -> build_recipient (which also
+#!   inserts the storage data into the advice provider) -> output_note::create
+#!   with DEFAULT_TAG -> load attachment -> output_note::set_attachment.
+#!
+#! Inputs:  []
+#! Outputs: []
+@locals(8)
+pub proc tick
+    # 1) Bump the state counter.
+    exec.increment_count
+
+    # 2) Build the NetworkAccountTarget attachment for *this* account and
+    #    stash its parts in locals. We can't keep them on the stack across
+    #    the call to `output_note::create` because the call frame trashes
+    #    them.
+    exec.active_account::get_id
+    # => [suffix, prefix]
+    push.ALWAYS movdn.2
+    # => [suffix, prefix, exec_hint]
+    exec.network_account_target::new
+    # => [scheme, kind, ATTACHMENT(4)]
+    loc_store.ATTACHMENT_SCHEME_LOC
+    loc_store.ATTACHMENT_KIND_LOC
+    loc_storew_le.ATTACHMENT_LOC dropw
+    # => []
+
+    # 3) Build the new note's recipient. Empty storage: storage_ptr = 0,
+    #    num_storage_items = 0. `note::build_recipient` ALSO calls
+    #    `adv.insert_mem` to publish the storage range to the advice
+    #    provider, which is what lets the executor (and the network builder
+    #    when it later picks this note up) reconstruct the public note.
+    exec.active_note::get_serial_number
+    # => [SERIAL_NUM]
+    push.1 add
+    # => [SERIAL_NUM+1]
+    exec.active_note::get_script_root
+    # => [SCRIPT_ROOT, SERIAL_NUM+1]
+    swapw
+    # => [SERIAL_NUM+1, SCRIPT_ROOT]
+    push.0 push.0
+    # => [storage_ptr=0, num_storage_items=0, SERIAL_NUM+1, SCRIPT_ROOT]
+    exec.note::build_recipient
+    # => [RECIPIENT]
+
+    # 4) Create the note with DEFAULT_TAG (=0); targeting is via the
+    #    attachment, not the tag.
+    push.NOTE_TYPE_PUBLIC
+    # => [note_type, RECIPIENT]
+    push.DEFAULT_TAG
+    # => [tag=0, note_type, RECIPIENT]
+    exec.output_note::create
+    # => [note_idx]
+
+    # 5) Apply the saved NetworkAccountTarget attachment so the builder
+    #    actually picks the note up.
+    padw loc_loadw_le.ATTACHMENT_LOC
+    # => [ATTACHMENT, note_idx]
+    loc_load.ATTACHMENT_KIND_LOC
+    # => [kind, ATTACHMENT, note_idx]
+    loc_load.ATTACHMENT_SCHEME_LOC
+    # => [scheme, kind, ATTACHMENT, note_idx]
+    movup.6
+    # => [note_idx, scheme, kind, ATTACHMENT]
+    exec.output_note::set_attachment
     # => []
 end
