@@ -20,11 +20,11 @@ The "input" and "output" are both UTXO-style notes; each transition consumes one
 
 ```mermaid
 flowchart LR
-    FSM([FSM<br/>account state])
+    FSM[FSM<br/>account state]
     UTXO([UTXO<br/>update_state note])
 
     FSM -->|emits| UTXO
-    UTXO -->|consumed by network builder<br/>increments counter| FSM
+    UTXO -->|increments counter| FSM
 ```
 
 Each cycle: the FSM consumes a UTXO note, increments its counter, and emits a new UTXO note tagged back at itself. The network transaction builder picks up that note in the next block and feeds it back in, so the arrow loops forever with no user transactions.
